@@ -3,5 +3,6 @@
 // 2 = Mister Test
 // 3 = Motor Test
 // 4 = Barcode/RFID Tester
+// 5 = Keypad w/ ISR + FIFO testing
 
-#define DEBUG_MODE 4
+#define DEBUG_MODE 5

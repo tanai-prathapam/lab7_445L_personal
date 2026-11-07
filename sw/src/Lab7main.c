@@ -16,7 +16,10 @@
 #include "Lab7.h"
 #include "Switch.h"
 #include "Mister.h"
+#include "../inc/UART.h"
+#include "Keypad.h"
 #include "BarcodeReader.h"
+#include "../inc/Timer.h"
 #include "Dump.h"
 
 volatile uint32_t JitterReady = 0;
@@ -69,22 +72,113 @@ int main(void){
 #elif DEBUG_MODE == 4
 // Barcode/RFID Test
 int main(void){
-  uint32_t n=0;
+  char barcode[BARCODE_MAX_LENGTH+1];
   __disable_irq(); 
   LaunchPad_Init();
   Clock_Init_HFXT_40_80MHz(0);  // 0.005% accurate running off external crystal oscillator
-
-  ST7735_InitR(INITR_REDTAB); //INITR_REDTAB for AdaFruit, INITR_BLACKTAB for SPI HiLetgo ST7735R
-  ST7735_FillScreen(ST7735_BLACK);
-  ST7735_SetCursor(0, 0);  
-  ST7735_OutString("ECE445L main0\n");
-  ST7735_OutString("Ramp output to DAC\n");
-  TIMG0->COUNTERREGS.CTRCTL &= ~0x01; // disarm if not using SDC
-  Barcode_Init();
+  UART_Init();
+  if(!BarcodeReader_Init(40000000U,115200)){
+        __enable_irq();
+        UART_OutString("Barcode UART configuration invalid.\r\n");
+        while(1){__WFI();}
+    }
+  __enable_irq();
+  UART_OutString("Barcode test: waiting for 16-character long UART scans.\r\n");
 
   while(1){
-    
+    BarcodeResult result=BarcodeReader_Read(barcode,sizeof(barcode));
+    if(result==BARCODE_READY){
+        UART_OutString("Scanned: ");
+        UART_OutString(barcode);
+        UART_OutString("\r\n");
+    }else if(result!=BARCODE_NONE){
+        UART_OutString("Rejected scan; check settings, length, or UART overrun.\r\n");
+    }
+
+    uint32_t saved=__get_PRIMASK();
+    __disable_irq();
+    if(!BarcodeReader_HasPendingInput()){
+        __DSB();
+        __WFI();
+    }
+    __set_PRIMASK(saved);
   }
+}
+#elif DEBUG_MODE == 5
+
+void TIMG0_IRQHandler(void){// runs every 1ms
+  if((TIMG0->CPU_INT.IIDX) == 1){ // this will acknowledge
+    static uint16_t counter = 0;
+    counter = (counter + 1) % 1000;
+    if(counter % 100 == 0) {
+        MatrixKeypad_Task();
+      }
+  }
+}
+
+int main(void) {
+  char c;
+  uint16_t map, lastMap = 0xFFFF;
+  uint32_t count = 0;
+  uint32_t line = 4;
+  int32_t row, col;
+
+  __disable_irq();
+  LaunchPad_Init();
+  Clock_Init_HFXT_40_80MHz(0);  // 0.005% accurate running off external crystal oscillator
+  ST7735_InitR(INITR_GREENTAB);
+  Keypad_Init();
+
+  TimerG0_IntArm(1000, 79, 2);
+  __enable_irq();
+
+  ST7735_FillScreen(ST7735_BLACK);
+  ST7735_SetCursor(0,0); ST7735_OutString("Mode 5: ISR + FIFO");
+  ST7735_SetCursor(0,10); ST7735_OutString("Count:");
+  ST7735_SetCursor(0,11); ST7735_OutString("Last:");
+
+  while(1) {
+
+    map = Debug_IsrBitmap;
+
+    if(map != lastMap) {
+      lastMap = map;
+      ST7735_SetCursor(0,2);
+      ST7735_OutUHex2((map >> 8) & 0xFF, ST7735_YELLOW);
+      ST7735_OutUHex2(map & 0xFF, ST7735_YELLOW);
+    }
+
+    for(row = 0; row < 4; row++) {
+      ST7735_SetCursor(2,4+row);
+      for(col = 0; col < 4; col++) {
+        if(map & (1u << ((4*row) + col))) {
+          ST7735_OutChar(MatrixKeypad_KeyAt(row, col));
+        } else {
+          ST7735_OutChar('.');
+        }
+        ST7735_OutChar(' ');
+      }
+    }
+
+    // ISR's view
+    ST7735_SetCursor(0,12); ST7735_OutString("ISR map:");
+    ST7735_SetCursor(9,12); ST7735_OutUHex2(Debug_IsrBitmap, ST7735_YELLOW);
+
+    ST7735_SetCursor(0,13); ST7735_OutString("ISR key:");
+    ST7735_SetCursor(9,13); ST7735_OutChar(Debug_IsrKey ? Debug_IsrKey : '-');
+    ST7735_OutChar(' ');
+    ST7735_OutUDec(Debug_IsrKeysDown);
+
+    ST7735_SetCursor(0,8); ST7735_OutString("Ticks:");
+    ST7735_SetCursor(9,8); ST7735_OutUDec(Debug_IsrCount);
+
+    if(MatrixKeypad_Get(&c)) {
+      count++;
+      ST7735_SetCursor(9,10); ST7735_OutUDec(count);
+      ST7735_SetCursor(9,11); ST7735_OutChar(c);
+    }
+  }
+
 }
 #elif DEBUG_MODE == 0
 // Master MSPM0
